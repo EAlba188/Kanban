@@ -1,0 +1,567 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Kanban</title>
+<link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+  * { margin:0; padding:0; box-sizing:border-box; }
+  body { background:#0F1117; color:#E2E8F0; font-family:'DM Sans','Inter',system-ui,sans-serif; min-height:100vh; }
+  input,textarea,select,button { font-family:inherit; }
+  ::-webkit-scrollbar { width:6px; }
+  ::-webkit-scrollbar-track { background:transparent; }
+  ::-webkit-scrollbar-thumb { background:rgba(255,255,255,0.1); border-radius:3px; }
+</style>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.9/babel.min.js"></script>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel">
+const { useState, useEffect, useRef, useCallback } = React;
+
+const COLUMNS = [
+  { id: "todo", label: "To Do", color: "#F59E0B" },
+  { id: "doing", label: "Doing", color: "#3B82F6" },
+  { id: "done", label: "Done", color: "#10B981" },
+];
+
+const STORAGE_KEY = "kanban-app-data-v3";
+
+const CAT_COLORS = [
+  "#6366F1","#EC4899","#F59E0B","#10B981","#3B82F6",
+  "#EF4444","#8B5CF6","#14B8A6","#F97316","#06B6D6",
+  "#84CC16","#E11D48","#7C3AED","#0EA5E9","#D946EF",
+];
+
+const DEFAULT_DATA = { categories: [], tasks: [], miscActive: true, boardFilters: { misc: true }, idCounter: 1 };
+function genId(d) { return d.idCounter++; }
+function diffColor(n) { return n <= 3 ? "#6B7280" : n <= 6 ? "#F59E0B" : "#EF4444"; }
+
+function App() {
+  const [data, setData] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [tab, setTab] = useState("kanban");
+
+  const [showNewTask, setShowNewTask] = useState(null);
+  const [ntTitle, setNtTitle] = useState("");
+  const [ntDesc, setNtDesc] = useState("");
+  const [ntCat, setNtCat] = useState("");
+  const [ntDiff, setNtDiff] = useState(5);
+
+  const [openTask, setOpenTask] = useState(null);
+  const [editing, setEditing] = useState(false);
+  const [etTitle, setEtTitle] = useState("");
+  const [etDesc, setEtDesc] = useState("");
+  const [etCat, setEtCat] = useState("");
+  const [etDiff, setEtDiff] = useState(5);
+
+  const [draggedTask, setDraggedTask] = useState(null);
+  const [dragOverCol, setDragOverCol] = useState(null);
+
+  const [showNewCat, setShowNewCat] = useState(false);
+  const [ncName, setNcName] = useState("");
+  const [ncColor, setNcColor] = useState("#6366F1");
+  const [editingCat, setEditingCat] = useState(null);
+  const [ecName, setEcName] = useState("");
+  const [ecColor, setEcColor] = useState("");
+  const [confirmDelCat, setConfirmDelCat] = useState(null);
+  const [confirmDelTask, setConfirmDelTask] = useState(false);
+
+  const saveRef = useRef(null);
+  useEffect(() => { loadData(); }, []);
+
+  const saveData = useCallback((d) => {
+    if (saveRef.current) clearTimeout(saveRef.current);
+    saveRef.current = setTimeout(async () => {
+      try { localStorage.setItem(STORAGE_KEY, JSON.stringify(d)); } catch (e) { console.error(e); }
+    }, 250);
+  }, []);
+
+  async function loadData() {
+    try {
+      const raw = localStorage.getItem(STORAGE_KEY);
+      if (raw) {
+        const p = JSON.parse(raw);
+        p.categories = (p.categories||[]).map(c => ({ ...c, active: c.active !== false }));
+        if (p.miscActive === undefined) p.miscActive = true;
+        if (!p.boardFilters) {
+          p.boardFilters = { misc: true };
+          p.categories.forEach(c => { if (c.active) p.boardFilters[c.id] = true; });
+        }
+        p.tasks = (p.tasks||[]).map(t => ({ ...t, difficulty: typeof t.difficulty === "number" ? t.difficulty : 5, description: t.description || "" }));
+        setData(p);
+      } else setData({ ...DEFAULT_DATA });
+    } catch { setData({ ...DEFAULT_DATA }); }
+    setLoading(false);
+  }
+
+  function update(fn) {
+    setData(prev => {
+      const next = JSON.parse(JSON.stringify(prev));
+      fn(next);
+      saveData(next);
+      return next;
+    });
+  }
+
+  // === Categories (tab) — controls whether they appear in filter bar ===
+  function addCategory() {
+    const name = ncName.trim(); if (!name) return;
+    update(d => {
+      const id = genId(d);
+      d.categories.push({ id, name, color: ncColor, active: true });
+      d.boardFilters[id] = true; // new categories visible on board by default
+    });
+    setNcName(""); setNcColor(CAT_COLORS[Math.floor(Math.random() * CAT_COLORS.length)]); setShowNewCat(false);
+  }
+  function updateCategory(id) {
+    const name = ecName.trim(); if (!name) return;
+    update(d => { const c = d.categories.find(c => c.id === id); if (c) { c.name = name; c.color = ecColor; } });
+    setEditingCat(null);
+  }
+  function deleteCategory(id) {
+    update(d => {
+      d.categories = d.categories.filter(c => c.id !== id);
+      d.tasks.forEach(t => { if (t.categoryId === id) t.categoryId = null; });
+      delete d.boardFilters[id];
+    });
+    setConfirmDelCat(null);
+  }
+  // Toggle active (categories tab) — shows/hides from filter bar
+  function toggleCatActive(id) {
+    update(d => {
+      const c = d.categories.find(c => c.id === id);
+      if (c) {
+        c.active = !c.active;
+        if (c.active) d.boardFilters[c.id] = true; // when activating, default to visible on board
+        else delete d.boardFilters[c.id]; // when deactivating, remove from board filters
+      }
+    });
+  }
+  function toggleMiscActive() {
+    update(d => {
+      d.miscActive = !d.miscActive;
+      if (d.miscActive) d.boardFilters.misc = true;
+      else delete d.boardFilters.misc;
+    });
+  }
+
+  // === Board filters — controls whether tasks are shown on the board ===
+  function toggleBoardFilter(key) {
+    update(d => { d.boardFilters[key] = !d.boardFilters[key]; });
+  }
+
+  // === Tasks ===
+  function addTask(column) {
+    const title = ntTitle.trim(); if (!title) return;
+    update(d => { d.tasks.push({ id: genId(d), title, description: ntDesc, categoryId: ntCat ? Number(ntCat) : null, difficulty: ntDiff, column, createdAt: Date.now() }); });
+    setNtTitle(""); setNtDesc(""); setNtCat(""); setNtDiff(5); setShowNewTask(null);
+  }
+  function saveTaskEdit() {
+    const title = etTitle.trim(); if (!title || !openTask) return;
+    update(d => {
+      const t = d.tasks.find(t => t.id === openTask);
+      if (t) { t.title = title; t.description = etDesc; t.categoryId = etCat ? Number(etCat) : null; t.difficulty = etDiff; }
+    });
+    setEditing(false);
+  }
+  function deleteTask(id) {
+    update(d => { d.tasks = d.tasks.filter(t => t.id !== id); });
+    setOpenTask(null); setEditing(false); setConfirmDelTask(false);
+  }
+  function moveTask(id, col) {
+    update(d => { const t = d.tasks.find(t => t.id === id); if (t) t.column = col; });
+  }
+
+  function getCat(id) {
+    if (!id || !data) return { name: "Misc", color: "#94A3B8" };
+    return data.categories.find(c => c.id === id) || { name: "Misc", color: "#94A3B8" };
+  }
+
+  // Active categories = appear in filter bar
+  function getActiveCategories() { return data ? data.categories.filter(c => c.active !== false) : []; }
+
+  // Visible tasks = category is active AND board filter is on
+  function getVisibleTasks(column) {
+    if (!data) return [];
+    const bf = data.boardFilters || {};
+    return data.tasks
+      .filter(t => t.column === column)
+      .filter(t => {
+        if (!t.categoryId) {
+          return data.miscActive && bf.misc !== false;
+        }
+        const cat = data.categories.find(c => c.id === t.categoryId);
+        if (!cat || !cat.active) return false; // inactive category → hidden
+        return bf[t.categoryId] !== false; // check board filter
+      })
+      .sort((a, b) => (b.difficulty || 0) - (a.difficulty || 0));
+  }
+
+  function resetAll() { update(d => { d.categories = []; d.tasks = []; d.idCounter = 1; d.miscActive = true; d.boardFilters = { misc: true }; }); }
+
+  if (loading) return (
+    <div style={{ display:"flex",alignItems:"center",justifyContent:"center",height:"100vh",background:"#0F1117",color:"#E2E8F0",fontFamily:"'DM Sans',system-ui" }}>
+      <span style={{ fontSize:13,opacity:0.5 }}>Cargando...</span>
+    </div>
+  );
+
+  const isMiscActive = data.miscActive !== false;
+  const bf = data.boardFilters || {};
+  const total = data.tasks.length;
+  const done = data.tasks.filter(t => t.column === "done").length;
+  const currentTask = openTask ? data.tasks.find(t => t.id === openTask) : null;
+
+  return (
+    <div style={{ minHeight:"100vh",background:"#0F1117",color:"#E2E8F0",fontFamily:"'DM Sans','Inter',system-ui,sans-serif" }}>
+      <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet"/>
+
+      {/* HEADER */}
+      <div style={{ borderBottom:"1px solid rgba(255,255,255,0.06)",padding:"12px 20px",display:"flex",alignItems:"center",justifyContent:"space-between",flexWrap:"wrap",gap:10 }}>
+        <div style={{ display:"flex",alignItems:"center",gap:10 }}>
+          <div style={{ width:28,height:28,borderRadius:7,background:"linear-gradient(135deg,#6366F1,#8B5CF6)",display:"flex",alignItems:"center",justifyContent:"center",fontSize:13,fontWeight:700 }}>▦</div>
+          <span style={{ fontSize:15,fontWeight:700 }}>Kanban</span>
+          <span style={{ fontSize:10,color:"#64748B",fontFamily:"'JetBrains Mono',monospace" }}>{total > 0 ? `${done}/${total}` : ""}</span>
+        </div>
+        <div style={{ display:"flex",alignItems:"center",gap:6 }}>
+          <div style={{ display:"flex",background:"rgba(255,255,255,0.04)",borderRadius:9,padding:3,gap:2 }}>
+            <button onClick={() => setTab("kanban")} style={{ ...tabBtn,...(tab==="kanban"?tabAct:{}) }}>Board</button>
+            <button onClick={() => setTab("categories")} style={{ ...tabBtn,...(tab==="categories"?tabAct:{}) }}>Categorías <span style={{ opacity:0.5,fontSize:10,marginLeft:3 }}>{data.categories.length}</span></button>
+          </div>
+          <button onClick={() => { if(window.confirm("¿Borrar todo?")) resetAll(); }}
+            style={{ padding:"5px 9px",borderRadius:6,border:"none",background:"rgba(239,68,68,0.08)",color:"#F87171",fontSize:10,fontWeight:500,cursor:"pointer",fontFamily:"inherit" }}>Reset</button>
+        </div>
+      </div>
+
+      {/* ===== KANBAN TAB ===== */}
+      {tab === "kanban" && (
+        <React.Fragment>
+          {/* FILTER BAR — only active categories, toggleable on/off for board visibility */}
+          <div style={{ padding:"10px 20px",display:"flex",alignItems:"center",gap:5,borderBottom:"1px solid rgba(255,255,255,0.04)",flexWrap:"wrap",minHeight:38 }}>
+            <span style={{ fontSize:10,color:"#475569",fontFamily:"'JetBrains Mono',monospace",marginRight:4 }}>FILTRO</span>
+            {isMiscActive && (
+              <button onClick={() => toggleBoardFilter("misc")}
+                style={{ ...filterChip, background: bf.misc ? "rgba(148,163,184,0.2)" : "rgba(255,255,255,0.03)", color: bf.misc ? "#CBD5E1" : "#475569", borderColor: bf.misc ? "rgba(148,163,184,0.3)" : "rgba(255,255,255,0.06)" }}>
+                <span style={{ width:7,height:7,borderRadius:"50%",background:"#94A3B8",opacity:bf.misc?1:0.3 }}/>Misc
+              </button>
+            )}
+            {getActiveCategories().map(c => {
+              const on = bf[c.id] !== false;
+              return (
+                <button key={c.id} onClick={() => toggleBoardFilter(c.id)}
+                  style={{ ...filterChip, background: on ? c.color+"22" : "rgba(255,255,255,0.03)", color: on ? c.color : "#475569", borderColor: on ? c.color+"44" : "rgba(255,255,255,0.06)" }}>
+                  <span style={{ width:7,height:7,borderRadius:"50%",background:c.color,opacity:on?1:0.25 }}/>{c.name}
+                </button>
+              );
+            })}
+            {!isMiscActive && getActiveCategories().length === 0 && (
+              <span style={{ fontSize:11,color:"#64748B" }}>No hay categorías activas — actívalas en la pestaña Categorías</span>
+            )}
+          </div>
+
+          {/* BOARD */}
+          <div style={{ display:"flex",gap:12,padding:"16px 20px",overflowX:"auto",minHeight:"calc(100vh - 120px)" }}>
+            {COLUMNS.map(col => {
+              const tasks = getVisibleTasks(col.id);
+              const isOver = dragOverCol === col.id;
+              return (
+                <div key={col.id}
+                  onDragOver={e => { e.preventDefault(); e.dataTransfer.dropEffect="move"; setDragOverCol(col.id); }}
+                  onDragLeave={() => setDragOverCol(null)}
+                  onDrop={e => { e.preventDefault(); if(draggedTask && draggedTask.column!==col.id) moveTask(draggedTask.id,col.id); setDraggedTask(null); setDragOverCol(null); }}
+                  style={{ flex:1,minWidth:240,background:isOver?"rgba(255,255,255,0.04)":"rgba(255,255,255,0.02)",borderRadius:12,border:`1px solid ${isOver?col.color+"55":"rgba(255,255,255,0.05)"}`,display:"flex",flexDirection:"column",transition:"all 0.2s" }}>
+
+                  <div style={{ padding:"12px 12px 8px",display:"flex",alignItems:"center",justifyContent:"space-between" }}>
+                    <div style={{ display:"flex",alignItems:"center",gap:8 }}>
+                      <div style={{ width:9,height:9,borderRadius:3,background:col.color }}/>
+                      <span style={{ fontSize:11,fontWeight:700,letterSpacing:"0.05em",textTransform:"uppercase" }}>{col.label}</span>
+                      <span style={{ fontSize:10,color:"#64748B",fontFamily:"'JetBrains Mono',monospace",background:"rgba(255,255,255,0.05)",padding:"1px 6px",borderRadius:5 }}>{tasks.length}</span>
+                    </div>
+                    <button onClick={() => { setShowNewTask(col.id); setNtTitle(""); setNtDesc(""); setNtCat(""); setNtDiff(5); }}
+                      style={{ background:col.color+"22",border:`1px solid ${col.color}44`,color:col.color,cursor:"pointer",fontSize:14,padding:"1px 8px",borderRadius:5,fontWeight:700 }}>+</button>
+                  </div>
+
+                  <div style={{ flex:1,padding:"0 8px 8px",overflowY:"auto",display:"flex",flexDirection:"column",gap:6 }}>
+                    {showNewTask === col.id && (
+                      <div style={{ ...card, border:"1px solid rgba(99,102,241,0.3)" }}>
+                        <input value={ntTitle} onChange={e=>setNtTitle(e.target.value)} placeholder="Título..." autoFocus
+                          onKeyDown={e=>e.key==="Enter"&&ntTitle.trim()&&addTask(col.id)} style={inp}/>
+                        <textarea value={ntDesc} onChange={e=>setNtDesc(e.target.value)} placeholder="Descripción (opcional)..."
+                          style={{ ...inp,marginTop:6,resize:"vertical",minHeight:48 }} rows={2}/>
+                        <div style={{ display:"flex",gap:5,marginTop:6,alignItems:"center",flexWrap:"wrap" }}>
+                          <select value={ntCat} onChange={e=>setNtCat(e.target.value)} style={{ ...sel,flex:1 }}>
+                            <option value="">Misc</option>
+                            {getActiveCategories().map(c=><option key={c.id} value={c.id}>{c.name}</option>)}
+                          </select>
+                          <div style={{ display:"flex",alignItems:"center",gap:4 }}>
+                            <span style={{ fontSize:10,color:"#64748B" }}>Dif:</span>
+                            <input type="range" min={1} max={10} value={ntDiff} onChange={e=>setNtDiff(Number(e.target.value))} style={{ width:70,accentColor:diffColor(ntDiff) }}/>
+                            <span style={{ fontSize:12,fontWeight:700,color:diffColor(ntDiff),fontFamily:"'JetBrains Mono',monospace",minWidth:16,textAlign:"center" }}>{ntDiff}</span>
+                          </div>
+                        </div>
+                        <div style={{ display:"flex",gap:5,marginTop:7 }}>
+                          <button onClick={()=>addTask(col.id)} style={{ ...btn,background:"#6366F1",color:"#fff" }}>Añadir</button>
+                          <button onClick={()=>setShowNewTask(null)} style={{ ...btn,background:"rgba(255,255,255,0.06)" }}>Cancelar</button>
+                        </div>
+                      </div>
+                    )}
+
+                    {tasks.map(task => {
+                      const cat = getCat(task.categoryId);
+                      const dc = diffColor(task.difficulty);
+                      return (
+                        <div key={task.id} draggable
+                          onDragStart={e=>{ setDraggedTask(task); e.dataTransfer.effectAllowed="move"; e.target.style.opacity="0.4"; }}
+                          onDragEnd={e=>{ e.target.style.opacity="1"; setDraggedTask(null); setDragOverCol(null); }}
+                          onClick={() => { setOpenTask(task.id); setEditing(false); setConfirmDelTask(false); }}
+                          style={{ ...card, cursor:"pointer", borderLeft:`3px solid ${dc}` }}
+                          onMouseEnter={e=>e.currentTarget.style.background="rgba(255,255,255,0.05)"}
+                          onMouseLeave={e=>e.currentTarget.style.background="rgba(255,255,255,0.03)"}>
+                          <div style={{ fontSize:13,fontWeight:500,lineHeight:1.35 }}>{task.title}</div>
+                          <div style={{ display:"flex",alignItems:"center",gap:5,marginTop:6 }}>
+                            <span style={{ fontSize:10,padding:"2px 7px",borderRadius:20,background:cat.color+"22",color:cat.color,fontWeight:600,border:`1px solid ${cat.color}33` }}>{cat.name}</span>
+                            <span style={{ fontSize:10,fontFamily:"'JetBrains Mono',monospace",fontWeight:700,color:dc,background:dc+"18",padding:"2px 6px",borderRadius:10 }}>{task.difficulty}</span>
+                          </div>
+                        </div>
+                      );
+                    })}
+
+                    {showNewTask !== col.id && (
+                      <button onClick={()=>{ setShowNewTask(col.id); setNtTitle(""); setNtDesc(""); setNtCat(""); setNtDiff(5); }}
+                        style={{ width:"100%",padding:"8px",borderRadius:9,border:`1px dashed ${col.color}30`,background:"transparent",color:col.color,fontSize:11,fontWeight:600,cursor:"pointer",fontFamily:"inherit",marginTop:2,opacity:0.45,transition:"opacity 0.15s" }}
+                        onMouseEnter={e=>e.target.style.opacity="1"} onMouseLeave={e=>e.target.style.opacity="0.45"}>
+                        + Añadir tarea
+                      </button>
+                    )}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </React.Fragment>
+      )}
+
+      {/* ===== CATEGORIES TAB ===== */}
+      {tab === "categories" && (
+        <div style={{ padding:"24px 20px",maxWidth:560,margin:"0 auto" }}>
+          <div style={{ display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:20 }}>
+            <div>
+              <h2 style={{ margin:0,fontSize:17,fontWeight:700 }}>Categorías</h2>
+              <p style={{ margin:"4px 0 0",fontSize:11,color:"#64748B" }}>Activa = aparece en los filtros del board</p>
+            </div>
+            <button onClick={()=>{ setShowNewCat(true); setNcName(""); setNcColor(CAT_COLORS[Math.floor(Math.random()*CAT_COLORS.length)]); }}
+              style={{ padding:"7px 14px",borderRadius:8,border:"none",background:"#6366F1",color:"#fff",fontSize:12,fontWeight:600,cursor:"pointer",fontFamily:"inherit" }}>+ Nueva</button>
+          </div>
+
+          {/* Misc */}
+          <div style={{ ...catRow,marginBottom:8 }}>
+            <div style={{ display:"flex",alignItems:"center",gap:12,flex:1 }}>
+              <button onClick={toggleMiscActive} style={{ ...tog,background:isMiscActive?"#10B981":"rgba(255,255,255,0.08)" }}>
+                <div style={{ ...knob,transform:isMiscActive?"translateX(18px)":"translateX(2px)" }}/>
+              </button>
+              <div style={{ width:12,height:12,borderRadius:3,background:"#94A3B8" }}/>
+              <div>
+                <div style={{ fontSize:13,fontWeight:600,opacity:isMiscActive?1:0.35 }}>Misc</div>
+                <div style={{ fontSize:10,color:"#64748B" }}>Sin categoría</div>
+              </div>
+            </div>
+            <span style={badge}>{data.tasks.filter(t=>!t.categoryId).length}</span>
+          </div>
+
+          {showNewCat && (
+            <div style={{ ...catRow,border:"1px solid rgba(99,102,241,0.3)",marginBottom:8,flexDirection:"column",alignItems:"stretch" }}>
+              <input value={ncName} onChange={e=>setNcName(e.target.value)} placeholder="Nombre..." style={inp} autoFocus onKeyDown={e=>e.key==="Enter"&&addCategory()}/>
+              <div style={{ display:"flex",gap:4,marginTop:10,flexWrap:"wrap" }}>
+                {CAT_COLORS.map(c=><button key={c} onClick={()=>setNcColor(c)} style={{ width:22,height:22,borderRadius:5,background:c,border:ncColor===c?"2px solid #fff":"2px solid transparent",cursor:"pointer",padding:0 }}/>)}
+              </div>
+              <div style={{ display:"flex",gap:6,marginTop:10 }}>
+                <button onClick={addCategory} style={{ ...btn,background:"#6366F1",color:"#fff" }}>Crear</button>
+                <button onClick={()=>setShowNewCat(false)} style={{ ...btn,background:"rgba(255,255,255,0.06)" }}>Cancelar</button>
+              </div>
+            </div>
+          )}
+
+          {(() => {
+            const activeCatsList = data.categories.filter(c => c.active !== false);
+            const inactiveCatsList = data.categories.filter(c => c.active === false);
+
+            function renderCatRow(cat) {
+              const on = cat.active !== false;
+              const cnt = data.tasks.filter(t=>t.categoryId===cat.id).length;
+              if (editingCat === cat.id) return (
+                <div key={cat.id} style={{ ...catRow,border:"1px solid rgba(99,102,241,0.3)",flexDirection:"column",alignItems:"stretch" }}>
+                  <input value={ecName} onChange={e=>setEcName(e.target.value)} style={inp} autoFocus onKeyDown={e=>e.key==="Enter"&&updateCategory(cat.id)}/>
+                  <div style={{ display:"flex",gap:4,marginTop:10,flexWrap:"wrap" }}>
+                    {CAT_COLORS.map(c=><button key={c} onClick={()=>setEcColor(c)} style={{ width:22,height:22,borderRadius:5,background:c,border:ecColor===c?"2px solid #fff":"2px solid transparent",cursor:"pointer",padding:0 }}/>)}
+                  </div>
+                  <div style={{ display:"flex",gap:6,marginTop:10 }}>
+                    <button onClick={()=>updateCategory(cat.id)} style={{ ...btn,background:"#6366F1",color:"#fff" }}>Guardar</button>
+                    <button onClick={()=>setEditingCat(null)} style={{ ...btn,background:"rgba(255,255,255,0.06)" }}>Cancelar</button>
+                  </div>
+                </div>
+              );
+              return (
+                <div key={cat.id} style={catRow}>
+                  <div style={{ display:"flex",alignItems:"center",gap:12,flex:1 }}>
+                    <button onClick={()=>toggleCatActive(cat.id)} style={{ ...tog,background:on?"#10B981":"rgba(255,255,255,0.08)" }}>
+                      <div style={{ ...knob,transform:on?"translateX(18px)":"translateX(2px)" }}/>
+                    </button>
+                    <div style={{ width:12,height:12,borderRadius:3,background:cat.color,opacity:on?1:0.25,transition:"opacity 0.15s" }}/>
+                    <span style={{ fontSize:13,fontWeight:600,opacity:on?1:0.35,transition:"opacity 0.15s" }}>{cat.name}</span>
+                  </div>
+                  <div style={{ display:"flex",alignItems:"center",gap:6 }}>
+                    <span style={badge}>{cnt}</span>
+                    <button onClick={()=>{ setEditingCat(cat.id); setEcName(cat.name); setEcColor(cat.color); }} style={iBtn}>✎</button>
+                    {confirmDelCat===cat.id ? (
+                      <React.Fragment><button onClick={()=>deleteCategory(cat.id)} style={{ ...iBtn,color:"#EF4444" }}>✓</button><button onClick={()=>setConfirmDelCat(null)} style={iBtn}>✕</button></React.Fragment>
+                    ) : (
+                      <button onClick={()=>setConfirmDelCat(cat.id)} style={iBtn}>🗑</button>
+                    )}
+                  </div>
+                </div>
+              );
+            }
+
+            return (
+              <React.Fragment>
+                <div style={{ display:"flex",flexDirection:"column",gap:6 }}>
+                  {activeCatsList.map(renderCatRow)}
+                </div>
+                {inactiveCatsList.length > 0 && (
+                  <React.Fragment>
+                    <div style={{ display:"flex",alignItems:"center",gap:10,margin:"18px 0 10px" }}>
+                      <div style={{ flex:1,height:1,background:"rgba(255,255,255,0.06)" }}/>
+                      <span style={{ fontSize:10,color:"#475569",fontFamily:"'JetBrains Mono',monospace",textTransform:"uppercase",letterSpacing:"0.05em" }}>Inactivas</span>
+                      <div style={{ flex:1,height:1,background:"rgba(255,255,255,0.06)" }}/>
+                    </div>
+                    <div style={{ display:"flex",flexDirection:"column",gap:6 }}>
+                      {inactiveCatsList.map(renderCatRow)}
+                    </div>
+                  </React.Fragment>
+                )}
+              </React.Fragment>
+            );
+          })()}
+
+          {data.categories.length===0 && !showNewCat && (
+            <div style={{ textAlign:"center",padding:"36px 16px",color:"#475569" }}>
+              <div style={{ fontSize:24,marginBottom:10 }}>📂</div>
+              <div style={{ fontSize:12 }}>Sin categorías.</div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* ===== TASK DETAIL MODAL ===== */}
+      {currentTask && (
+        <div style={overlay} onClick={()=>{ setOpenTask(null); setEditing(false); setConfirmDelTask(false); }}>
+          <div style={modal} onClick={e=>e.stopPropagation()}>
+            {(() => {
+              const cat = getCat(currentTask.categoryId);
+              const dc = diffColor(currentTask.difficulty);
+              const col = COLUMNS.find(c=>c.id===currentTask.column);
+
+              if (editing) return (
+                <div>
+                  <div style={{ fontSize:11,fontWeight:600,color:"#64748B",marginBottom:10,textTransform:"uppercase",letterSpacing:"0.05em" }}>Editar tarea</div>
+                  <input value={etTitle} onChange={e=>setEtTitle(e.target.value)} style={{ ...inp,fontSize:15,fontWeight:600 }} autoFocus
+                    onKeyDown={e=>{ if(e.key==="Enter"&&!e.shiftKey) saveTaskEdit(); }}/>
+                  <textarea value={etDesc} onChange={e=>setEtDesc(e.target.value)} placeholder="Descripción..."
+                    style={{ ...inp,marginTop:8,resize:"vertical",minHeight:80 }} rows={3}/>
+                  <div style={{ display:"flex",gap:6,marginTop:10,alignItems:"center",flexWrap:"wrap" }}>
+                    <select value={etCat} onChange={e=>setEtCat(e.target.value)} style={{ ...sel,flex:1 }}>
+                      <option value="">Misc</option>
+                      {getActiveCategories().map(c=><option key={c.id} value={c.id}>{c.name}</option>)}
+                    </select>
+                    <div style={{ display:"flex",alignItems:"center",gap:4 }}>
+                      <span style={{ fontSize:10,color:"#64748B" }}>Dif:</span>
+                      <input type="range" min={1} max={10} value={etDiff} onChange={e=>setEtDiff(Number(e.target.value))} style={{ width:80,accentColor:diffColor(etDiff) }}/>
+                      <span style={{ fontSize:13,fontWeight:700,color:diffColor(etDiff),fontFamily:"'JetBrains Mono',monospace",minWidth:18,textAlign:"center" }}>{etDiff}</span>
+                    </div>
+                  </div>
+                  <div style={{ display:"flex",gap:6,marginTop:14 }}>
+                    <button onClick={saveTaskEdit} style={{ ...btn,background:"#6366F1",color:"#fff",padding:"7px 16px" }}>Guardar</button>
+                    <button onClick={()=>setEditing(false)} style={{ ...btn,background:"rgba(255,255,255,0.06)",padding:"7px 16px" }}>Cancelar</button>
+                  </div>
+                </div>
+              );
+
+              return (
+                <div>
+                  <div style={{ display:"flex",justifyContent:"space-between",alignItems:"flex-start",gap:10 }}>
+                    <div style={{ flex:1 }}>
+                      <div style={{ fontSize:17,fontWeight:700,lineHeight:1.3 }}>{currentTask.title}</div>
+                      <div style={{ display:"flex",alignItems:"center",gap:6,marginTop:8 }}>
+                        <span style={{ fontSize:11,padding:"3px 9px",borderRadius:20,background:cat.color+"22",color:cat.color,fontWeight:600,border:`1px solid ${cat.color}33` }}>{cat.name}</span>
+                        <span style={{ fontSize:11,fontFamily:"'JetBrains Mono',monospace",fontWeight:700,color:dc,background:dc+"18",padding:"3px 8px",borderRadius:10 }}>Dif {currentTask.difficulty}</span>
+                        <span style={{ fontSize:10,padding:"3px 8px",borderRadius:20,background:col.color+"22",color:col.color,fontWeight:600 }}>{col.label}</span>
+                      </div>
+                    </div>
+                    <button onClick={()=>{ setOpenTask(null); setEditing(false); setConfirmDelTask(false); }}
+                      style={{ background:"none",border:"none",color:"#64748B",cursor:"pointer",fontSize:18,padding:"2px 6px" }}>✕</button>
+                  </div>
+
+                  <div style={{ marginTop:16,padding:"14px 16px",background:"rgba(255,255,255,0.03)",borderRadius:10,border:"1px solid rgba(255,255,255,0.06)",minHeight:60 }}>
+                    <div style={{ fontSize:10,color:"#64748B",textTransform:"uppercase",letterSpacing:"0.05em",marginBottom:6,fontWeight:600 }}>Descripción</div>
+                    <div style={{ fontSize:13,color:currentTask.description?"#CBD5E1":"#475569",lineHeight:1.5,whiteSpace:"pre-wrap" }}>
+                      {currentTask.description || "Sin descripción"}
+                    </div>
+                  </div>
+
+                  <div style={{ marginTop:14 }}>
+                    <div style={{ fontSize:10,color:"#64748B",textTransform:"uppercase",letterSpacing:"0.05em",marginBottom:6,fontWeight:600 }}>Mover a</div>
+                    <div style={{ display:"flex",gap:6 }}>
+                      {COLUMNS.filter(c=>c.id!==currentTask.column).map(c=>(
+                        <button key={c.id} onClick={()=>moveTask(currentTask.id,c.id)}
+                          style={{ ...btn,background:c.color+"18",color:c.color,border:`1px solid ${c.color}33`,padding:"6px 14px" }}>
+                          {c.label}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
+                  <div style={{ display:"flex",gap:8,marginTop:18,paddingTop:14,borderTop:"1px solid rgba(255,255,255,0.06)" }}>
+                    <button onClick={()=>{ setEditing(true); setEtTitle(currentTask.title); setEtDesc(currentTask.description||""); setEtCat(currentTask.categoryId?String(currentTask.categoryId):""); setEtDiff(currentTask.difficulty); }}
+                      style={{ ...btn,background:"rgba(255,255,255,0.06)",padding:"7px 16px" }}>✎ Editar</button>
+                    {confirmDelTask ? (
+                      <div style={{ display:"flex",gap:4,alignItems:"center" }}>
+                        <span style={{ fontSize:11,color:"#F87171" }}>¿Seguro?</span>
+                        <button onClick={()=>deleteTask(currentTask.id)} style={{ ...btn,background:"rgba(239,68,68,0.15)",color:"#F87171",padding:"7px 12px" }}>Sí</button>
+                        <button onClick={()=>setConfirmDelTask(false)} style={{ ...btn,background:"rgba(255,255,255,0.06)",padding:"7px 12px" }}>No</button>
+                      </div>
+                    ) : (
+                      <button onClick={()=>setConfirmDelTask(true)} style={{ ...btn,background:"rgba(239,68,68,0.08)",color:"#F87171",padding:"7px 16px" }}>🗑 Eliminar</button>
+                    )}
+                  </div>
+                </div>
+              );
+            })()}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+const card = { background:"rgba(255,255,255,0.03)",borderRadius:10,padding:10,border:"1px solid rgba(255,255,255,0.06)",transition:"background 0.12s" };
+const inp = { width:"100%",background:"rgba(0,0,0,0.3)",border:"1px solid rgba(255,255,255,0.1)",borderRadius:7,padding:"7px 10px",color:"#E2E8F0",fontSize:13,outline:"none",fontFamily:"inherit",boxSizing:"border-box" };
+const sel = { background:"rgba(0,0,0,0.3)",border:"1px solid rgba(255,255,255,0.1)",borderRadius:7,padding:"5px 7px",color:"#E2E8F0",fontSize:11,outline:"none",fontFamily:"inherit" };
+const btn = { padding:"5px 11px",borderRadius:6,border:"none",color:"#E2E8F0",fontSize:11,fontWeight:500,cursor:"pointer",fontFamily:"inherit" };
+const iBtn = { background:"none",border:"none",color:"#64748B",cursor:"pointer",fontSize:12,padding:"2px 4px",borderRadius:4 };
+const tabBtn = { padding:"6px 14px",borderRadius:7,border:"none",fontSize:12,fontWeight:600,cursor:"pointer",fontFamily:"inherit",background:"transparent",color:"#64748B",transition:"all 0.15s" };
+const tabAct = { background:"rgba(255,255,255,0.1)",color:"#E2E8F0" };
+const filterChip = { display:"flex",alignItems:"center",gap:5,padding:"4px 10px",borderRadius:20,border:"1px solid",fontSize:11,fontWeight:600,cursor:"pointer",fontFamily:"inherit",transition:"all 0.15s" };
+const catRow = { display:"flex",alignItems:"center",justifyContent:"space-between",padding:"12px 14px",background:"rgba(255,255,255,0.03)",borderRadius:11,border:"1px solid rgba(255,255,255,0.06)" };
+const tog = { width:40,height:22,borderRadius:11,border:"none",cursor:"pointer",position:"relative",transition:"background 0.2s",padding:0,flexShrink:0 };
+const knob = { width:18,height:18,borderRadius:"50%",background:"#fff",position:"absolute",top:2,transition:"transform 0.2s" };
+const badge = { fontSize:10,color:"#64748B",fontFamily:"'JetBrains Mono',monospace",background:"rgba(255,255,255,0.05)",padding:"2px 7px",borderRadius:5 };
+const overlay = { position:"fixed",inset:0,background:"rgba(0,0,0,0.65)",backdropFilter:"blur(4px)",display:"flex",alignItems:"center",justifyContent:"center",zIndex:100,padding:20 };
+const modal = { background:"#1A1D27",borderRadius:16,padding:24,width:"100%",maxWidth:480,maxHeight:"85vh",overflowY:"auto",border:"1px solid rgba(255,255,255,0.08)" };
+
+ReactDOM.createRoot(document.getElementById('root')).render(<App/>);
+</script>
+</body>
+</html>

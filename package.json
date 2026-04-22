@@ -1,18 +1,34 @@
 {
   "name": "JustEden",
-  "version": "1.0.3",
+  "version": "1.0.4",
+  "description": "Kanban desktop app",
   "main": "main.js",
   "scripts": {
-    "start": "electron ."
+    "start": "electron .",
+    "build": "electron-builder",
+    "build:win": "electron-builder --win",
+    "build:mac": "electron-builder --mac"
   },
   "devDependencies": {
-    "electron": "^30.0.0"
+    "electron": "^30.5.1",
+    "electron-builder": "^24.13.3"
   },
   "build": {
-    "appId": "kanban.local",
+    "appId": "com.kanban.app",
+    "productName": "Kanban",
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "**/*"
+    ],
     "win": {
       "target": "portable",
       "icon": "icon.ico"
+    },
+    "mac": {
+      "target": "dmg",
+      "icon": "icon.icns"
     }
   }
 }

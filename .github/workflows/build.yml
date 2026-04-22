@@ -15,11 +15,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install Node
+      - name: Use Node
         uses: actions/setup-node@v4
         with:
           node-version: 20
 
-      - run: npm install
+      - name: Install dependencies
+        run: npm install
 
-      - run: npm run build
+      - name: Build app
+        run: npm run build
